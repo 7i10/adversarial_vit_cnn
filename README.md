@@ -1,0 +1,2 @@
+# adversarial_vit_cnn
+ViTとCNNの内部挙動を敵対的サンプル下で比較する実験用リポジトリ（PyTorch・Hydra・Tiny-ImageNet・torchattacks対応）
