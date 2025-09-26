@@ -1,5 +1,5 @@
 model:
-  name: vit # vit, resnet, efficientnet
+  name: resnet # vit, resnet, efficientnet
 attack:
   method: fgsm # fgsm, pgd
   epsilon: 0.0314 # 8/255
@@ -10,4 +10,4 @@ eval:
   metrics: [l2_norm, sparsity, max_softmax]
 logging:
   use_tensorboard: true
-  use_wandb: true
+  use_wandb: false
