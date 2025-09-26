@@ -67,51 +67,51 @@ def main(cfg: DictConfig):
         all_results.append(["Clean", "MaxSoftmaxProb", None, None, mp])
         break
 
-    # FGSM
+    # FGSM（バッチ逐次処理）
     print("--- FGSM ---")
-    adv_images, adv_labels = generate_adversarial_samples(model, loader, 'fgsm', cfg.attack.epsilon, device)
-    with torch.no_grad():
-        logits = model(adv_images.to(device))
-    for name, feat in activations.items():
-        l2 = metrics.feature_l2_norm(feat)
-        sp = metrics.activation_sparsity(feat)
-        print(f"[FGSM][{name}] L2: {l2:.4f}, Sparsity: {sp:.4f}")
+    for adv_images, adv_labels in generate_adversarial_samples(model, loader, 'fgsm', cfg.attack.epsilon, device):
+        with torch.no_grad():
+            logits = model(adv_images)
+        for name, feat in activations.items():
+            l2 = metrics.feature_l2_norm(feat)
+            sp = metrics.activation_sparsity(feat)
+            print(f"[FGSM][{name}] L2: {l2:.4f}, Sparsity: {sp:.4f}")
+            if writer:
+                writer.add_scalar(f"FGSM/{name}/L2", l2)
+                writer.add_scalar(f"FGSM/{name}/Sparsity", sp)
+            if cfg.logging.use_wandb:
+                wandb.log({f"FGSM_{name}_L2": l2, f"FGSM_{name}_Sparsity": sp})
+            all_results.append(["FGSM", name, l2, sp, None])
+        mp = metrics.max_softmax_prob(logits)
+        print(f"[FGSM] Max Softmax Prob: {mp:.4f}")
         if writer:
-            writer.add_scalar(f"FGSM/{name}/L2", l2)
-            writer.add_scalar(f"FGSM/{name}/Sparsity", sp)
+            writer.add_scalar("FGSM/MaxSoftmaxProb", mp)
         if cfg.logging.use_wandb:
-            wandb.log({f"FGSM_{name}_L2": l2, f"FGSM_{name}_Sparsity": sp})
-        all_results.append(["FGSM", name, l2, sp, None])
-    mp = metrics.max_softmax_prob(logits)
-    print(f"[FGSM] Max Softmax Prob: {mp:.4f}")
-    if writer:
-        writer.add_scalar("FGSM/MaxSoftmaxProb", mp)
-    if cfg.logging.use_wandb:
-        wandb.log({"FGSM_MaxSoftmaxProb": mp})
-    all_results.append(["FGSM", "MaxSoftmaxProb", None, None, mp])
+            wandb.log({"FGSM_MaxSoftmaxProb": mp})
+        all_results.append(["FGSM", "MaxSoftmaxProb", None, None, mp])
 
-    # PGD
+    # PGD（バッチ逐次処理）
     print("--- PGD ---")
-    adv_images, adv_labels = generate_adversarial_samples(model, loader, 'pgd', cfg.attack.epsilon, device)
-    with torch.no_grad():
-        logits = model(adv_images.to(device))
-    for name, feat in activations.items():
-        l2 = metrics.feature_l2_norm(feat)
-        sp = metrics.activation_sparsity(feat)
-        print(f"[PGD][{name}] L2: {l2:.4f}, Sparsity: {sp:.4f}")
+    for adv_images, adv_labels in generate_adversarial_samples(model, loader, 'pgd', cfg.attack.epsilon, device):
+        with torch.no_grad():
+            logits = model(adv_images)
+        for name, feat in activations.items():
+            l2 = metrics.feature_l2_norm(feat)
+            sp = metrics.activation_sparsity(feat)
+            print(f"[PGD][{name}] L2: {l2:.4f}, Sparsity: {sp:.4f}")
+            if writer:
+                writer.add_scalar(f"PGD/{name}/L2", l2)
+                writer.add_scalar(f"PGD/{name}/Sparsity", sp)
+            if cfg.logging.use_wandb:
+                wandb.log({f"PGD_{name}_L2": l2, f"PGD_{name}_Sparsity": sp})
+            all_results.append(["PGD", name, l2, sp, None])
+        mp = metrics.max_softmax_prob(logits)
+        print(f"[PGD] Max Softmax Prob: {mp:.4f}")
         if writer:
-            writer.add_scalar(f"PGD/{name}/L2", l2)
-            writer.add_scalar(f"PGD/{name}/Sparsity", sp)
+            writer.add_scalar("PGD/MaxSoftmaxProb", mp)
         if cfg.logging.use_wandb:
-            wandb.log({f"PGD_{name}_L2": l2, f"PGD_{name}_Sparsity": sp})
-        all_results.append(["PGD", name, l2, sp, None])
-    mp = metrics.max_softmax_prob(logits)
-    print(f"[PGD] Max Softmax Prob: {mp:.4f}")
-    if writer:
-        writer.add_scalar("PGD/MaxSoftmaxProb", mp)
-    if cfg.logging.use_wandb:
-        wandb.log({"PGD_MaxSoftmaxProb": mp})
-    all_results.append(["PGD", "MaxSoftmaxProb", None, None, mp])
+            wandb.log({"PGD_MaxSoftmaxProb": mp})
+        all_results.append(["PGD", "MaxSoftmaxProb", None, None, mp])
 
     # CSV保存
     with open(result_csv, "w") as f:

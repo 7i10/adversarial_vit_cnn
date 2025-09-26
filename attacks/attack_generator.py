@@ -1,4 +1,3 @@
-
 import torch
 from torch.utils.data import DataLoader
 import torchattacks
@@ -7,7 +6,7 @@ from torchvision import transforms
 from PIL import Image
 import numpy as np
 
-def get_tiny_imagenet_loader(batch_size=32):
+def get_tiny_imagenet_loader(batch_size=4):
     # Hugging Face datasetsからvalデータ取得
     dataset = load_dataset("zh-plus/tiny-imagenet", split="valid")
     transform = transforms.Compose([
@@ -43,17 +42,8 @@ def generate_adversarial_samples(model, loader, attack_name='fgsm', epsilon=8/25
         attack = torchattacks.PGD(model, eps=epsilon)
     else:
         raise ValueError('Unknown attack')
-    adv_images = []
-    labels = []
+    # バッチ逐次処理型に変更
     for images, targets in loader:
         images, targets = images.to(device), targets.to(device)
         adv = attack(images, targets)
-        adv_images.append(adv.cpu())
-        labels.append(targets.cpu())
-    adv_images = torch.cat(adv_images)
-    labels = torch.cat(labels)
-    return adv_images, labels
-
-# 使い方例
-# loader = get_imagenet100_loader('./data/imagenet100/val')
-# adv_images, labels = generate_adversarial_samples(model, loader, 'fgsm', 8/255)
+        yield adv, targets

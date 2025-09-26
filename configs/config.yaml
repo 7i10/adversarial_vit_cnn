@@ -4,10 +4,10 @@ attack:
   method: fgsm # fgsm, pgd
   epsilon: 0.0314 # 8/255
 data:
-  dataset: imagenet100
+  dataset: tiny_imagenet
   data_dir: ./data
 eval:
   metrics: [l2_norm, sparsity, max_softmax]
 logging:
   use_tensorboard: true
-  use_wandb: false
+  use_wandb: true
