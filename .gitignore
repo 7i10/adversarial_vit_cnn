@@ -4,6 +4,8 @@ outputs/
 data/
 wandb/
 results/
+
+.vscode/
 __pycache__/
 *.pt
 *.ckpt
