@@ -42,6 +42,7 @@ def main(cfg: DictConfig):
     print(f"Using device: {device}")
 
     # --- ImageNetサブセットデータローダー ---
+
     def create_imagenet_subset_loader(batch_size, subset_size, seed=42):
         transform = transforms.Compose(
             [
@@ -59,9 +60,10 @@ def main(cfg: DictConfig):
                 "label": torch.tensor(label),
             }
 
-        ds = load_dataset(
-            "imagenet-1k", split=f"train.shuffle(seed={seed})[:{subset_size}]"
-        ).with_transform(transform_fn)
+        # validation splitを使い、shuffle+selectでサブセットを作成
+        full_ds = load_dataset("ILSVRC/imagenet-1k", split="validation")
+        subset_ds = full_ds.shuffle(seed=seed).select(range(subset_size))
+        ds = subset_ds.with_transform(transform_fn)
 
         def collate_fn(batch):
             images = torch.stack([b["image"] for b in batch])
