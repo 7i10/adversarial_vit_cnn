@@ -15,8 +15,6 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 
 
-@hydra.main(config_path="configs", config_name="config", version_base=None)
-
 # --- データローダー作成 ---
 def create_tiny_imagenet_loaders(batch_size=4):
     transform = transforms.Compose(
@@ -130,6 +128,7 @@ def evaluate(
 
 
 # --- メインルーチン ---
+@hydra.main(config_path="configs", config_name="config", version_base=None)
 def main(cfg: DictConfig):
     pl.seed_everything(cfg.seed)
     output_dir = os.getcwd()
