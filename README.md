@@ -21,7 +21,7 @@ Vision Transformer (ViT) と CNN (ResNet34, EfficientNet-B3) の敵対的サン�
 
 ### 1. 準備
 
-1. ImageNet-100 検証データセットを `data/` ディレクトリに配置
+1. tiny-imagenet 検証データセットを `data/` ディレクトリに配置
    - 例: `data/tiny-imagenet/valid/クラス名/画像ファイル.jpg` の ImageFolder 形式
 2. WandB を使う場合は事前に `wandb login` を実行
 3. conda 環境をアクティベート
