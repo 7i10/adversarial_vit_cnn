@@ -1,6 +1,5 @@
 import torch
 import torchvision.models as models
-from typing import Dict, List
 
 
 # ViT-Small (torchvision: vit_b_16, vit_l_16 しかないため、vit_b_16を代用)

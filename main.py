@@ -7,61 +7,26 @@ import os
 import csv
 import wandb
 from torch.utils.tensorboard import SummaryWriter
-from attacks.attack_generator import (
-    get_tiny_imagenet_loader,
-    generate_adversarial_samples,
-)
+from attacks.attack_generator import generate_adversarial_samples
+
 from analysis import metrics
+from datasets import load_dataset
+from torch.utils.data import DataLoader
+from torchvision import transforms
 
 
 @hydra.main(config_path="configs", config_name="config", version_base=None)
-def main(cfg: DictConfig):
-    # シード設定
-    pl.seed_everything(cfg.seed)
 
-    # Hydra出力ディレクトリ
-    output_dir = os.getcwd()
-    os.makedirs(os.path.join(output_dir, "results"), exist_ok=True)
-    result_csv = os.path.join(output_dir, "results", f"result_{cfg.model.name}.csv")
-
-    # TensorBoard/WandB初期化
-    writer = None
-    if cfg.logging.use_tensorboard:
-        writer = SummaryWriter(log_dir=os.path.join(output_dir, "logs", cfg.model.name))
-    run_name = f"{cfg.model.name}_{cfg.attack.method}_eps{cfg.attack.epsilon}"
-    if cfg.logging.use_wandb:
-        wandb.init(project="adv_vit_cnn", name=run_name)
-        wandb.config.update(dict(cfg))
-
-    # 結果記録用リスト
-    all_results = []
-    print("設定:", cfg)
-
-    # モデルとフックの初期化
-    model, activations = hooks.get_model_and_hooks(
-        cfg.model.name, cfg.model.num_classes
+# --- データローダー作成 ---
+def create_tiny_imagenet_loaders(batch_size=4):
+    transform = transforms.Compose(
+        [
+            transforms.Resize(224),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+        ]
     )
-    print(f"Loaded model: {cfg.model.name}")
 
-    # Set device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-    print(f"Using device: {device}")
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model.to(device)
-
-    # データローダー
-    # ファインチューニング用trainと実験用valを分けて取得
-    from datasets import load_dataset
-    from torch.utils.data import DataLoader
-    from torchvision import transforms
-    # 変換
-    transform = transforms.Compose([
-        transforms.Resize(224),
-        transforms.CenterCrop(224),
-        transforms.ToTensor(),
-    ])
     def transform_fn(example):
         imgs = example["image"]
         labels = example["label"]
@@ -70,17 +35,30 @@ def main(cfg: DictConfig):
             return {"image": torch.stack(tensor_imgs), "label": torch.tensor(labels)}
         else:
             return {"image": transform(imgs), "label": torch.tensor(labels)}
-    # train/valデータセット
-    train_ds = load_dataset("zh-plus/tiny-imagenet", split="train").with_transform(transform_fn)
-    val_ds = load_dataset("zh-plus/tiny-imagenet", split="valid").with_transform(transform_fn)
+
+    train_ds = load_dataset("zh-plus/tiny-imagenet", split="train").with_transform(
+        transform_fn
+    )
+    val_ds = load_dataset("zh-plus/tiny-imagenet", split="valid").with_transform(
+        transform_fn
+    )
+
     def collate_fn(batch):
         images = torch.stack([b["image"] for b in batch])
         labels = torch.tensor([b["label"] for b in batch])
         return images, labels
-    train_loader = DataLoader(train_ds, batch_size=32, shuffle=True, collate_fn=collate_fn)
-    val_loader = DataLoader(val_ds, batch_size=cfg.data.get("batch_size", 4), shuffle=False, collate_fn=collate_fn)
 
-    # --- ファインチューニング（出力層のみ） ---
+    train_loader = DataLoader(
+        train_ds, batch_size=32, shuffle=True, collate_fn=collate_fn
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn
+    )
+    return train_loader, val_loader
+
+
+# --- ファインチューニング ---
+def finetune_classifier(model, train_loader, device, epochs=2):
     print("--- Fine-tuning classifier head on Tiny-ImageNet train split ---")
     for param in model.parameters():
         param.requires_grad = False
@@ -98,7 +76,7 @@ def main(cfg: DictConfig):
         raise RuntimeError("Unknown model head for fine-tuning")
     model.train()
     loss_fn = torch.nn.CrossEntropyLoss()
-    for epoch in range(2):  # 2エポックだけ
+    for epoch in range(epochs):
         total, correct, total_loss = 0, 0, 0.0
         for images, labels in train_loader:
             images, labels = images.to(device), labels.to(device)
@@ -111,108 +89,128 @@ def main(cfg: DictConfig):
             preds = logits.argmax(dim=1)
             correct += (preds == labels).sum().item()
             total += images.size(0)
-        print(f"[Fine-tune][Epoch {epoch+1}] Loss: {total_loss/total:.4f}, Acc: {correct/total:.4f}")
+        print(
+            f"[Fine-tune][Epoch {epoch + 1}] Loss: {total_loss / total:.4f}, Acc: {correct / total:.4f}"
+        )
     model.eval()
 
-    # --- ここから従来のval splitでの実験 ---
-    loader = val_loader
 
-    # クリーンデータ（全バッチ評価 & Accuracy記録）
-    print("--- Clean Data ---")
-    clean_accs = []
+# --- 評価ループ ---
+def evaluate(
+    model, loader, activations, device, writer, cfg, all_results, phase, attack_fn=None
+):
+    accs = []
     for images, labels in loader:
         images, labels = images.to(device), labels.to(device)
+        if attack_fn is not None:
+            images, labels = attack_fn(model, images, labels, device)
         with torch.no_grad():
             logits = model(images)
         acc = (logits.argmax(dim=1) == labels).float().mean().item()
-        clean_accs.append(acc)
+        accs.append(acc)
         for name, feat in activations.items():
             l2 = metrics.feature_l2_norm(feat)
             sp = metrics.activation_sparsity(feat)
-            print(f"[Clean][{name}] L2: {l2:.4f}, Sparsity: {sp:.4f}")
+            print(f"[{phase}][{name}] L2: {l2:.4f}, Sparsity: {sp:.4f}")
             if writer:
-                writer.add_scalar(f"Clean/{name}/L2", l2)
-                writer.add_scalar(f"Clean/{name}/Sparsity", sp)
+                writer.add_scalar(f"{phase}/{name}/L2", l2)
+                writer.add_scalar(f"{phase}/{name}/Sparsity", sp)
             if cfg.logging.use_wandb:
-                wandb.log({f"Clean/{name}/L2": l2, f"Clean/{name}/Sparsity": sp})
-            all_results.append(["Clean", name, l2, sp, None])
+                wandb.log({f"{phase}/{name}/L2": l2, f"{phase}/{name}/Sparsity": sp})
+            all_results.append([phase, name, l2, sp, None])
         mp = metrics.max_softmax_prob(logits)
-        print(f"[Clean] Max Softmax Prob: {mp:.4f}, Acc: {acc:.4f}")
+        print(f"[{phase}] Max Softmax Prob: {mp:.4f}, Acc: {acc:.4f}")
         if writer:
-            writer.add_scalar("Clean/MaxSoftmaxProb", mp)
-            writer.add_scalar("Clean/Accuracy", acc)
+            writer.add_scalar(f"{phase}/MaxSoftmaxProb", mp)
+            writer.add_scalar(f"{phase}/Accuracy", acc)
         if cfg.logging.use_wandb:
-            wandb.log({"Clean/MaxSoftmaxProb": mp, "Clean/Accuracy": acc})
-        all_results.append(["Clean", "MaxSoftmaxProb", None, None, mp])
-    # 平均Accuracy表示
-    print(f"[Clean] Mean Accuracy: {sum(clean_accs) / len(clean_accs):.4f}")
+            wandb.log({f"{phase}/MaxSoftmaxProb": mp, f"{phase}/Accuracy": acc})
+        all_results.append([phase, "MaxSoftmaxProb", None, None, mp])
+    print(f"[{phase}] Mean Accuracy: {sum(accs) / len(accs):.4f}")
 
-    # FGSM（全バッチ評価 & Accuracy記録 & 層ごとkeyでログ）
+
+# --- メインルーチン ---
+def main(cfg: DictConfig):
+    pl.seed_everything(cfg.seed)
+    output_dir = os.getcwd()
+    os.makedirs(os.path.join(output_dir, "results"), exist_ok=True)
+    result_csv = os.path.join(output_dir, "results", f"result_{cfg.model.name}.csv")
+    writer = None
+    if cfg.logging.use_tensorboard:
+        writer = SummaryWriter(log_dir=os.path.join(output_dir, "logs", cfg.model.name))
+    run_name = f"{cfg.model.name}_{cfg.attack.method}_eps{cfg.attack.epsilon}"
+    if cfg.logging.use_wandb:
+        wandb.init(project="adv_vit_cnn", name=run_name)
+        wandb.config.update(dict(cfg))
+    all_results = []
+    print("設定:", cfg)
+    model, activations = hooks.get_model_and_hooks(
+        cfg.model.name, cfg.model.num_classes
+    )
+    print(f"Loaded model: {cfg.model.name}")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    print(f"Using device: {device}")
+    train_loader, val_loader = create_tiny_imagenet_loaders(
+        batch_size=cfg.data.get("batch_size", 4)
+    )
+    finetune_classifier(model, train_loader, device, epochs=2)
+    model.eval()
+    # クリーンデータ
+    print("--- Clean Data ---")
+    evaluate(
+        model, val_loader, activations, device, writer, cfg, all_results, phase="Clean"
+    )
+    # FGSM
     print("--- FGSM ---")
-    fgsm_accs = []
-    for adv_images, adv_labels in generate_adversarial_samples(
-        model, loader, "fgsm", cfg.attack.epsilon, device
-    ):
-        with torch.no_grad():
-            logits = model(adv_images)
-        acc = (logits.argmax(dim=1) == adv_labels).float().mean().item()
-        fgsm_accs.append(acc)
-        for name, feat in activations.items():
-            l2 = metrics.feature_l2_norm(feat)
-            sp = metrics.activation_sparsity(feat)
-            print(f"[FGSM][{name}] L2: {l2:.4f}, Sparsity: {sp:.4f}")
-            if writer:
-                writer.add_scalar(f"FGSM/{name}/L2", l2)
-                writer.add_scalar(f"FGSM/{name}/Sparsity", sp)
-            if cfg.logging.use_wandb:
-                wandb.log({f"FGSM/{name}/L2": l2, f"FGSM/{name}/Sparsity": sp})
-            all_results.append(["FGSM", name, l2, sp, None])
-        mp = metrics.max_softmax_prob(logits)
-        print(f"[FGSM] Max Softmax Prob: {mp:.4f}, Acc: {acc:.4f}")
-        if writer:
-            writer.add_scalar("FGSM/MaxSoftmaxProb", mp)
-            writer.add_scalar("FGSM/Accuracy", acc)
-        if cfg.logging.use_wandb:
-            wandb.log({"FGSM/MaxSoftmaxProb": mp, "FGSM/Accuracy": acc})
-        all_results.append(["FGSM", "MaxSoftmaxProb", None, None, mp])
-    print(f"[FGSM] Mean Accuracy: {sum(fgsm_accs) / len(fgsm_accs):.4f}")
 
-    # PGD（全バッチ評価 & Accuracy記録 & 層ごとkeyでログ）
+    def fgsm_attack_fn(model, images, labels, device):
+        # 1バッチ分だけ攻撃
+        adv = next(
+            generate_adversarial_samples(
+                model, [(images, labels)], "fgsm", cfg.attack.epsilon, device
+            )
+        )
+        return adv[0], adv[1]
+
+    evaluate(
+        model,
+        val_loader,
+        activations,
+        device,
+        writer,
+        cfg,
+        all_results,
+        phase="FGSM",
+        attack_fn=fgsm_attack_fn,
+    )
+    # PGD
     print("--- PGD ---")
-    pgd_accs = []
-    for adv_images, adv_labels in generate_adversarial_samples(
-        model, loader, "pgd", cfg.attack.epsilon, device
-    ):
-        with torch.no_grad():
-            logits = model(adv_images)
-        acc = (logits.argmax(dim=1) == adv_labels).float().mean().item()
-        pgd_accs.append(acc)
-        for name, feat in activations.items():
-            l2 = metrics.feature_l2_norm(feat)
-            sp = metrics.activation_sparsity(feat)
-            print(f"[PGD][{name}] L2: {l2:.4f}, Sparsity: {sp:.4f}")
-            if writer:
-                writer.add_scalar(f"PGD/{name}/L2", l2)
-                writer.add_scalar(f"PGD/{name}/Sparsity", sp)
-            if cfg.logging.use_wandb:
-                wandb.log({f"PGD/{name}/L2": l2, f"PGD/{name}/Sparsity": sp})
-            all_results.append(["PGD", name, l2, sp, None])
-        mp = metrics.max_softmax_prob(logits)
-        print(f"[PGD] Max Softmax Prob: {mp:.4f}, Acc: {acc:.4f}")
-        if writer:
-            writer.add_scalar("PGD/MaxSoftmaxProb", mp)
-            writer.add_scalar("PGD/Accuracy", acc)
-        if cfg.logging.use_wandb:
-            wandb.log({"PGD/MaxSoftmaxProb": mp, "PGD/Accuracy": acc})
-        all_results.append(["PGD", "MaxSoftmaxProb", None, None, mp])
-    print(f"[PGD] Mean Accuracy: {sum(pgd_accs) / len(pgd_accs):.4f}")
 
+    def pgd_attack_fn(model, images, labels, device):
+        adv = next(
+            generate_adversarial_samples(
+                model, [(images, labels)], "pgd", cfg.attack.epsilon, device
+            )
+        )
+        return adv[0], adv[1]
+
+    evaluate(
+        model,
+        val_loader,
+        activations,
+        device,
+        writer,
+        cfg,
+        all_results,
+        phase="PGD",
+        attack_fn=pgd_attack_fn,
+    )
     # CSV保存
     with open(result_csv, "w") as f:
         writer_csv = csv.writer(f)
         writer_csv.writerow(["Type", "Layer", "L2Norm", "Sparsity", "MaxSoftmaxProb"])
         writer_csv.writerows(all_results)
-
     if writer:
         writer.close()
     if cfg.logging.use_wandb:
