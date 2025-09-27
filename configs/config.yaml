@@ -6,7 +6,7 @@ attack:
   pgd_steps: 10 # PGDのステップ数（必要に応じて使用）
 data:
   data_dir: ./data
-  batch_size: 4
+  batch_size: 8
   subset_size: 1000 # ImageNetサブセットの枚数
 eval:
   metrics: [l2_norm, sparsity, max_softmax]

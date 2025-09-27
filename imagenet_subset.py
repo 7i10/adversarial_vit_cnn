@@ -12,6 +12,7 @@ from analysis import metrics
 from datasets import load_dataset
 from torch.utils.data import DataLoader
 from torchvision import transforms
+import numpy as np
 
 
 @hydra.main(config_path="configs", config_name="config", version_base=None)
@@ -89,6 +90,9 @@ def main(cfg: DictConfig):
         attack_fn=None,
     ):
         accs = []
+        l2s = {name: [] for name in activations}
+        sparsities = {name: [] for name in activations}
+        max_softmax_probs = []
         for images, labels in loader:
             images, labels = images.to(device), labels.to(device)
             if attack_fn is not None:
@@ -100,6 +104,8 @@ def main(cfg: DictConfig):
             for name, feat in activations.items():
                 l2 = metrics.feature_l2_norm(feat)
                 sp = metrics.activation_sparsity(feat)
+                l2s[name].append(l2)
+                sparsities[name].append(sp)
                 print(f"[{phase}][{name}] L2: {l2:.4f}, Sparsity: {sp:.4f}")
                 if writer:
                     writer.add_scalar(f"{phase}/{name}/L2", l2)
@@ -110,6 +116,7 @@ def main(cfg: DictConfig):
                     )
                 all_results.append([phase, name, l2, sp, None])
             mp = metrics.max_softmax_prob(logits)
+            max_softmax_probs.append(mp)
             print(f"[{phase}] Max Softmax Prob: {mp:.4f}, Acc: {acc:.4f}")
             if writer:
                 writer.add_scalar(f"{phase}/MaxSoftmaxProb", mp)
@@ -117,7 +124,39 @@ def main(cfg: DictConfig):
             if cfg.logging.use_wandb:
                 wandb.log({f"{phase}/MaxSoftmaxProb": mp, f"{phase}/Accuracy": acc})
             all_results.append([phase, "MaxSoftmaxProb", None, None, mp])
-        print(f"[{phase}] Mean Accuracy: {sum(accs) / len(accs):.4f}")
+        # 平均・分散を計算
+        mean_acc = float(np.mean(accs))
+        std_acc = float(np.std(accs))
+        mean_mp = float(np.mean(max_softmax_probs))
+        std_mp = float(np.std(max_softmax_probs))
+        print(f"[{phase}] Mean Accuracy: {mean_acc:.4f} (std: {std_acc:.4f})")
+        print(f"[{phase}] Mean MaxSoftmaxProb: {mean_mp:.4f} (std: {std_mp:.4f})")
+        if cfg.logging.use_wandb:
+            wandb.log(
+                {
+                    f"{phase}/MeanAccuracy": mean_acc,
+                    f"{phase}/StdAccuracy": std_acc,
+                    f"{phase}/MeanMaxSoftmaxProb": mean_mp,
+                    f"{phase}/StdMaxSoftmaxProb": std_mp,
+                }
+            )
+        for name in activations:
+            l2_arr = np.array(l2s[name])
+            sp_arr = np.array(sparsities[name])
+            mean_l2, std_l2 = float(l2_arr.mean()), float(l2_arr.std())
+            mean_sp, std_sp = float(sp_arr.mean()), float(sp_arr.std())
+            print(
+                f"[{phase}][{name}] Mean L2: {mean_l2:.4f} (std: {std_l2:.4f}), Mean Sparsity: {mean_sp:.4f} (std: {std_sp:.4f})"
+            )
+            if cfg.logging.use_wandb:
+                wandb.log(
+                    {
+                        f"{phase}/{name}/MeanL2": mean_l2,
+                        f"{phase}/{name}/StdL2": std_l2,
+                        f"{phase}/{name}/MeanSparsity": mean_sp,
+                        f"{phase}/{name}/StdSparsity": std_sp,
+                    }
+                )
 
     # --- クリーンデータ ---
     print("--- Clean Data ---")
@@ -177,14 +216,17 @@ def main(cfg: DictConfig):
     )
 
     # --- CSV保存 ---
+    header = ["Type", "Layer", "L2Norm", "Sparsity", "MaxSoftmaxProb"]
     with open(result_csv, "w") as f:
         writer_csv = csv.writer(f)
-        writer_csv.writerow(["Type", "Layer", "L2Norm", "Sparsity", "MaxSoftmaxProb"])
+        writer_csv.writerow(header)
         writer_csv.writerows(all_results)
-    if writer:
-        writer.close()
+    # --- WandB Table保存 ---
     if cfg.logging.use_wandb:
+        table = wandb.Table(columns=header, data=all_results)
+        wandb.log({"all_results": table})
         wandb.finish()
 
 
-# 実行はHydraに任せるため、if __name__ == "__main__": main() は不要
+if __name__ == "__main__":
+    main()
