@@ -137,23 +137,21 @@ def main(cfg: DictConfig):
     writer = None
     if cfg.logging.use_tensorboard:
         writer = SummaryWriter(log_dir=os.path.join(output_dir, "logs", cfg.model.name))
-    run_name = f"{cfg.model.name}_{cfg.attack.method}_eps{cfg.attack.epsilon}"
+    run_name = f"{cfg.model.name}_eps{cfg.attack.epsilon}"
     if cfg.logging.use_wandb:
-        wandb.init(project="adv_vit_cnn", name=run_name)
+        wandb.init(project="adv_vit_cnn_tinyimagenet", name=run_name)
         wandb.config.update(dict(cfg))
     all_results = []
     print("設定:", cfg)
-    model, activations = hooks.get_model_and_hooks(
-        cfg.model.name, cfg.model.num_classes
-    )
+    model, activations = hooks.get_model_and_hooks(cfg.model.name, 200)
     print(f"Loaded model: {cfg.model.name}")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     print(f"Using device: {device}")
     train_loader, val_loader = create_tiny_imagenet_loaders(
-        batch_size=cfg.data.get("batch_size", 4)
+        batch_size=cfg.data.batch_size
     )
-    finetune_classifier(model, train_loader, device, epochs=2)
+    finetune_classifier(model, train_loader, device, epochs=cfg.eval.finetune_epochs)
     model.eval()
     # クリーンデータ
     print("--- Clean Data ---")

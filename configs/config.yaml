@@ -1,14 +1,16 @@
 model:
   name: efficientnet # vit, resnet, efficientnet
-  num_classes: 200
 attack:
   method: fgsm # fgsm, pgd
   epsilon: 0.0314 # 8/255
+  pgd_steps: 10 # PGDのステップ数（必要に応じて使用）
 data:
-  dataset: tiny_imagenet
   data_dir: ./data
+  batch_size: 4
+  subset_size: 1000 # ImageNetサブセットの枚数
 eval:
   metrics: [l2_norm, sparsity, max_softmax]
+  finetune_epochs: 2 # ファインチューニングのエポック数
 logging:
   use_tensorboard: true
   use_wandb: true
