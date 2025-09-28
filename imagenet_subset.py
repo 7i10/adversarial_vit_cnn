@@ -1,3 +1,4 @@
+from torch.utils.data import DataLoader, SubsetRandomSampler
 import hydra
 from omegaconf import DictConfig
 import torch
@@ -9,8 +10,7 @@ import wandb
 from torch.utils.tensorboard import SummaryWriter
 from attacks.attack_generator import generate_adversarial_samples
 from analysis import metrics
-from datasets import load_dataset
-from torch.utils.data import DataLoader
+import deeplake
 from torchvision import transforms
 import numpy as np
 
@@ -42,38 +42,35 @@ def main(cfg: DictConfig):
     print(f"Using device: {device}")
 
     # --- ImageNetサブセットデータローダー ---
-
     def create_imagenet_subset_loader(batch_size, subset_size, seed=42):
-        transform = transforms.Compose(
+        # Deep LakeのImageNet valセットをロード
+        # Deep Lake 4.x: v3データセットはqueryで取得
+        # al://パスに変更（hub://は非推奨）
+        ds = deeplake.query('select * from "al://activeloop/imagenet-val"')
+
+        # torchvisionのtransformを定義
+        tform = transforms.Compose(
             [
+                transforms.ToPILImage(),
+                transforms.Lambda(lambda x: x.convert("RGB")),
                 transforms.Resize(224),
                 transforms.CenterCrop(224),
                 transforms.ToTensor(),
             ]
         )
 
-        def transform_fn(example):
-            img = example["image"]
-            label = example["label"]
-            return {
-                "image": transform(img.convert("RGB")),
-                "label": torch.tensor(label),
-            }
+        # transformにcallableを渡す
+        def deeplake_transform(sample):
+            return {"images": tform(sample["images"]), "labels": sample["labels"]}
 
-        # validation splitを使い、shuffle+selectでサブセットを作成
-        full_ds = load_dataset("ILSVRC/imagenet-1k", split="validation")
-        subset_ds = full_ds.shuffle(seed=seed).select(range(subset_size))
-        ds = subset_ds.with_transform(transform_fn)
+        torch_ds = ds.pytorch(transform=deeplake_transform)
 
-        def collate_fn(batch):
-            images = torch.stack([b["image"] for b in batch])
-            labels = torch.tensor([b["label"] for b in batch])
-            return images, labels
-
-        loader = DataLoader(
-            ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn
-        )
-        return loader
+        # サブセット用インデックス
+        idxs = np.random.RandomState(seed).choice(len(ds), subset_size, replace=False)
+        sampler = SubsetRandomSampler(list(idxs))
+        # DataLoaderを作成
+        dl = DataLoader(torch_ds, batch_size=batch_size, sampler=sampler)
+        return dl
 
     loader = create_imagenet_subset_loader(
         batch_size=cfg.data.batch_size, subset_size=cfg.data.subset_size, seed=cfg.seed
@@ -95,28 +92,38 @@ def main(cfg: DictConfig):
         l2s = {name: [] for name in activations}
         sparsities = {name: [] for name in activations}
         max_softmax_probs = []
-        for images, labels in loader:
-            images, labels = images.to(device), labels.to(device)
+        for batch_idx, batch in enumerate(loader):
+            images = batch["images"].to(device)
+            labels = batch["labels"].to(device)
+            if labels.dtype != torch.long:
+                labels = labels.long()
+            if labels.ndim == 2 and labels.shape[1] == 1:
+                labels = labels.squeeze(1)
             if attack_fn is not None:
                 images, labels = attack_fn(model, images, labels, device)
             with torch.no_grad():
                 logits = model(images)
-            acc = (logits.argmax(dim=1) == labels).float().mean().item()
+            preds = logits.argmax(dim=1)
+            acc = (preds == labels).float().mean().item()
             accs.append(acc)
+            # 各層の特徴量指標をまとめて処理
+            l2_log = {}
+            sp_log = {}
             for name, feat in activations.items():
                 l2 = metrics.feature_l2_norm(feat)
                 sp = metrics.activation_sparsity(feat)
-                l2s[name].append(l2)
-                sparsities[name].append(sp)
+                l2s.setdefault(name, []).append(l2)
+                sparsities.setdefault(name, []).append(sp)
                 print(f"[{phase}][{name}] L2: {l2:.4f}, Sparsity: {sp:.4f}")
-                if writer:
-                    writer.add_scalar(f"{phase}/{name}/L2", l2)
-                    writer.add_scalar(f"{phase}/{name}/Sparsity", sp)
-                if cfg.logging.use_wandb:
-                    wandb.log(
-                        {f"{phase}/{name}/L2": l2, f"{phase}/{name}/Sparsity": sp}
-                    )
+                l2_log[f"{phase}/{name}/L2"] = l2
+                sp_log[f"{phase}/{name}/Sparsity"] = sp
                 all_results.append([phase, name, l2, sp, None])
+            # ロギング（writer/wandb）
+            if writer:
+                for k, v in {**l2_log, **sp_log}.items():
+                    writer.add_scalar(k, v)
+            if cfg.logging.use_wandb:
+                wandb.log({**l2_log, **sp_log})
             mp = metrics.max_softmax_prob(logits)
             max_softmax_probs.append(mp)
             print(f"[{phase}] Max Softmax Prob: {mp:.4f}, Acc: {acc:.4f}")
