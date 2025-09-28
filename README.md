@@ -1,16 +1,15 @@
-name: efficientnet
-method: pgd
-
 # adversarial_vit_cnn
 
 ## 実験概要
 
 Vision Transformer (ViT-b-16) と CNN (ResNet34, EfficientNet-B3) の敵対的サンプルに対する内部挙動を比較・分析します。
 
-- データセット: Tiny-ImageNet (Hugging Face Datasets から自動ダウンロード)
-- モデル: ViT-Base, ResNet34, EfficientNet-B3 (ImageNet 事前学習済み)
-- 攻撃手法: FGSM, PGD (ε=8/255)
-- 評価指標: 特徴量の L2 ノルム, 活性化のスパース性, 予測確率の最大値, Accuracy
+- **対応データセット:**
+  - ImageNet (Deep Lake 経由で自動ダウンロード)
+  - Tiny-ImageNet (Hugging Face Datasets 経由で自動ダウンロード)
+- **モデル:** ViT-Base, ResNet34, EfficientNet-B3 (ImageNet 事前学習済み)
+- **攻撃手法:** FGSM, PGD (ε=8/255)
+- **評価指標:** 特徴量の L2 ノルム, 活性化のスパース性, 予測確率の最大値, Accuracy
 
 ## 実験環境
 
@@ -19,7 +18,7 @@ Vision Transformer (ViT-b-16) と CNN (ResNet34, EfficientNet-B3) の敵対的�
 - Hydra (設定管理)
 - TensorBoard / WandB (ロギング)
 - torch-attacks
-- Hugging Face Datasets
+- Hugging Face Datasets, Deep Lake
 
 ## 実験手順・実行方法
 
@@ -35,11 +34,16 @@ Vision Transformer (ViT-b-16) と CNN (ResNet34, EfficientNet-B3) の敵対的�
 
 ### 2. 実験の実行
 
-1. main.py を実行
-   ```zsh
-   python main.py
-   ```
-2. モデル名・攻撃手法・バッチサイズ等は `configs/config.yaml` で設定
+- **ImageNet 評価の場合**
+  ```zsh
+  python imagenet_subset.py
+  ```
+- **Tiny-ImageNet 評価の場合**
+  ```zsh
+  python tiny_imagenet.py
+  ```
+
+モデル名・攻撃手法・バッチサイズ等は `configs/config.yaml` で設定します。
 
 ### 3. 結果の確認
 
@@ -53,23 +57,24 @@ Vision Transformer (ViT-b-16) と CNN (ResNet34, EfficientNet-B3) の敵対的�
 
 ```yaml
 model:
-  name: vit
-  num_classes: 200
+  name: efficientnet # vit, resnet, efficientnet から選択
 attack:
-  method: fgsm
-  epsilon: 0.031
+  method: pgd # fgsm, pgd
+  epsilon: 0.0314
+  pgd_steps: 10
 data:
-  batch_size: 4
+  batch_size: 8
+  subset_size: 1000 # ImageNetサブセット用
 seed: 42
 ```
 
-### 5. 実験の流れ（main.py の処理概要）
+### 5. 実験の流れ（スクリプト共通の処理概要）
 
 1. シード固定・Hydra 設定読込
-2. モデル構築（出力層を Tiny-ImageNet 用に自動置換）
-3. Tiny-ImageNet の train/val ローダー自動作成
-4. train split で出力層のみ 2 エポック簡易ファインチューニング
-5. val split で以下を実施：
+2. モデル構築（出力層をデータセットに応じて自動置換）
+3. データローダー自動作成（ImageNet: Deep Lake, Tiny-ImageNet: Hugging Face）
+4. Tiny-ImageNet の場合は train split で出力層のみ簡易ファインチューニング
+5. val split またはサブセットで以下を実施：
    - クリーン画像で各層指標・Accuracy 計算
    - FGSM/PGD 敵対的サンプル生成・同様に評価
    - Hydra/TensorBoard/WandB に記録
@@ -83,3 +88,6 @@ seed: 42
 - analysis/: 評価・分析
 - logs/: 実験出力
 - results/: 評価 CSV
+- data/: データセット（自動ダウンロード）
+- imagenet_subset.py: ImageNet 用評価スクリプト
+- tiny_imagenet.py: Tiny-ImageNet 用評価スクリプト
